@@ -16,35 +16,36 @@ import os
 import pandas as pd
 from utils import addis as util
 from sklearn.metrics import f1_score
+from sklearn.metrics import recall_score
+from sklearn.metrics import precision_score
 from sklearn.metrics import roc_auc_score
 
 np.set_printoptions(threshold=np.nan)
 
 satellite = 's1'
 filetail = ".0.npy"
-continuous = False 
-lr = 1e-4
-momentum = 0.9
 len_dataset = 3591
 
-data_dir = '../addis_s1_center_cropped'
+data_dir = '../addis_s1_center_cropped_all_five'
 
-columns = util.balanced_binary_features
+# columns = util.balanced_binary_features
 columns = ['water_quality_concerns_val_YES',
-    'water_quality_concerns_val_NO']
+            'water_quality_concerns_val_NO']
 
-column_weights = [1 for _ in range(len(columns))]
+column_weights = [1 for _ in range(len(columns))] # How much to weigh each column in the loss function
 
-num_examples = 3591
+num_examples = 1000
 train_test_split = 0.9
 continuous = False
 lr = 1e-4 # was 0.01 for binary
 momentum = 0.5 # was 0.4 for binary
-last_many_f1 = 20
+detailed_metrics_for = 20
 batch_size = 64
 num_workers = 4
 num_epochs = 20
 weight_decay = 1e-3
+
+use_five_bands = True
 
 def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
     since = time.time()
@@ -92,13 +93,15 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
                 else:
                     inputs, labels = Variable(inputs), Variable(labels)
 
-
                 # zero the parameter gradients
                 optimizer.zero_grad()
 
                 # forward
-                # convolved = convolver(inputs)
-                outputs = model(inputs)
+                if use_five_bands:
+                    convolved = convolver(inputs)
+                    outputs = model(convolved)
+                else:
+                    outputs = model(inputs)
                 scores = sigmoider(outputs)
                 preds = torch.round(scores).data
                 scores = scores.data
@@ -114,7 +117,7 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
                 running_loss += loss.data[0]
                 if not continuous:
                     running_corrects += torch.sum((preds == labels.data.type(torch.cuda.FloatTensor)).type(torch.FloatTensor), 0)
-                    if not continuous and epoch >= num_epochs - last_many_f1: 
+                    if not continuous and epoch >= num_epochs - detailed_metrics_for: 
                         if running_preds is None: 
                             running_preds = preds.cpu().numpy()
                             running_labels = labels.data.cpu().numpy()
@@ -128,12 +131,34 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
 
             epoch_loss = running_loss / dataset_size
             epoch_acc = running_corrects.numpy() / dataset_size
-            if not continuous and epoch >= num_epochs - last_many_f1:
+            if not continuous and epoch >= num_epochs - detailed_metrics_for:
                 print ('%s Loss: %.4f') % (phase, epoch_loss)
                 for i, column in enumerate(columns):
-                    epoch_f1 = f1_score(running_labels[:, i], running_preds[:, i])
-                    roc_score = roc_auc_score(running_labels[:, i], running_scores[:, i])
-                    print ('%s Acc: %.4f F1: %.4f ROC_score: %.4f') % (column, epoch_acc[i], epoch_f1, roc_score)
+                    column_labels = running_labels[:, i]
+                    column_preds = running_preds[:, i]
+                    column_scores = running_scores[:, i]
+
+                    epoch_f1 = f1_score(column_labels, column_preds)
+                    epoch_precision = precision_score(column_labels, column_preds)
+                    epoch_recall = recall_score(column_labels, column_preds)
+                    roc_score = roc_auc_score(column_labels, column_scores)
+                    print ('%s Acc: %.4f F1: %.4f Precision: %.4f Recall: %.4f ROC_score: %.4f') % (column, epoch_acc[i], epoch_f1, epoch_precision, epoch_recall, roc_score)
+                    print ('Balance: %.4f' % current_dataset.balance[i])
+                    false_positive_index = np.argmin(column_labels - column_scores)
+                    false_negative_index = np.argmax(column_labels - column_scores)
+                    true_positive_index = np.argmin((column_labels - column_scores) + 2*(1-column_labels))
+                    true_negative_index = np.argmax((column_labels - column_scores) - 2*column_labels)
+
+                    false_positive_sat_index = current_dataset.indices[false_positive_index] + 1, column_scores[false_positive_index], column_labels[false_positive_index]
+                    false_negative_sat_index = current_dataset.indices[false_negative_index] + 1, column_scores[false_negative_index], column_labels[false_negative_index]
+                    true_positive_sat_index = current_dataset.indices[true_positive_index] + 1, column_scores[true_positive_index], column_labels[true_positive_index]
+                    true_negative_sat_index = current_dataset.indices[true_negative_index] + 1, column_scores[true_negative_index], column_labels[true_negative_index]
+
+                    print "False positive id, score, label: %d, %.4f, %d" % false_positive_sat_index
+                    print "False negative id, score, label: %d, %.4f, %d" % false_negative_sat_index
+                    print "True positive id, score, label: %d, %.4f, %d" % true_positive_sat_index
+                    print "True negative id, score, label: %d, %.4f, %d" % true_negative_sat_index
+                    print ""
 
                 # print('{} Loss: {:.4f} Acc: {:.4f} F1: {:.4f}'.format(
                 #             phase, epoch_loss, epoch_acc, epoch_f1))
@@ -189,7 +214,9 @@ class AddisDataset(Dataset):
 
     def __getitem__(self, idx):
         img_name = os.path.join(self.root_dir, satellite + '_median_addis_multiband_224x224_%d.npy' % (self.indices[idx]))
-        image = np.load(img_name)[:, :, :3]
+        # image = np.load(img_name)[:, :, :3]
+        if use_five_bands: image = np.load(img_name)
+        else: image = np.load(img_name)[:, :, :3]
         labels = self.data[idx]
         if self.transform:
             image = self.transform(image)
@@ -203,11 +230,11 @@ class AddisDataset(Dataset):
 data_transforms = transforms.Compose([
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+        transforms.Normalize([0.485, 0.456, 0.406, 0.45, 0.45], [0.229, 0.224, 0.225, 0.225, 0.225])
     ])
 
 indices = np.arange(len_dataset)
-np.random.shuffle(indices)
+# np.random.shuffle(indices)
 split_point = int(num_examples*train_test_split)
 train_indices = indices[:split_point]
 test_indices = indices[split_point:num_examples]
@@ -232,7 +259,7 @@ use_gpu = torch.cuda.is_available()
 ######## Train Model
 
 # torch.set_default_tensor_type('torch.cuda.FloatTensor')
-# convolver = nn.Conv2d(5, 3, 1)
+convolver = nn.Conv2d(5, 3, 1)
 model_ft = models.resnet18(pretrained=True)
 num_ftrs = model_ft.fc.in_features
 if continuous:
@@ -244,6 +271,7 @@ sigmoider = nn.Sigmoid()
 
 if use_gpu:
     model_ft = model_ft.cuda()
+    convolver = convolver.cuda()
 
 if not continuous:
     assert(len(columns) == len(column_weights))
@@ -260,19 +288,3 @@ exp_lr_scheduler = lr_scheduler.StepLR(optimizer_ft, step_size=7, gamma=0.1)
 
 model_ft = train_model(model_ft, criterion, optimizer_ft, exp_lr_scheduler,
                        num_epochs=num_epochs)
-
-# for data in dataloders:
-#     # get the inputs
-#     inputs = data['image']
-#     labels = data['labels'].type(torch.LongTensor)
-
-#     # wrap them in Variable
-#     if use_gpu:
-#         inputs = Variable(inputs.cuda())
-#         labels = Variable(labels.cuda())
-#     else:
-#         inputs, labels = Variable(inputs), Variable(labels)
-
-#     # forward
-#     outputs = model_ft(inputs)
-#     _, preds = torch.max(outputs.data, 1)
