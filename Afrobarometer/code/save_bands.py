@@ -3,15 +3,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 import gdal
 
-with open("/mnt/mounted_bucket/Afrobarometer_R6.csv", 'r') as f:
-    survey = list(csv.reader(f, delimiter= ","))
-areas = [];
-for i in range(1,len(survey)):
-    item = survey[i];
-    if item[0] == 'Tanzania' or item[0] == 'Uganda' or item[0] == 'Kenya' or item[0] == 'Burundi' or item[0] == 'Rwanda':
-        areas.append(item[-1]);
-#areas = [item[1] if item[1] is 'Tanzania' or if item[1] is 'Kenya' or if item[1] is 'Uganda' or if item#[1] is 'Burundi' or if item[1] 'Rwanda' for item in survey[1:]];
-print (len(areas))
 
 landsat_path = '/mnt/mounted_bucket/l8_median_afrobarometer_multiband_500x500_';
 
@@ -25,7 +16,7 @@ def read(tif_path, H,W):
 i = 0
 
 log = ""
-for i in range(0, len(areas)):
+for i in range(0, 7022):
     tifpath = landsat_path+areas[i]+'.0.tif';
     try:
         img = read(tifpath, 500, 500)
