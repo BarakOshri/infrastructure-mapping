@@ -1,3 +1,4 @@
+
 # from __future__ import print_function, division
 import sys
 sys.path.append("..")
@@ -15,6 +16,7 @@ import time
 import os
 import pandas as pd
 from utils import addis as util
+import ast
 from sklearn.metrics import f1_score
 from sklearn.metrics import recall_score
 from sklearn.metrics import precision_score
@@ -22,28 +24,30 @@ from sklearn.metrics import roc_auc_score
 
 np.set_printoptions(threshold=np.nan)
 
-satellite = 's1'
+satellite = 'l8'
 filetail = ".0.npy"
-len_dataset = 3591
-
-data_dir = '../addis_s1_center_cropped_all_five'
+len_dataset = 7022
+test_urban = 1
+test_rural = 0
+test_country = 0
+test_unique = 1
+data_dir ='/home/ptr_adlsn/afro_l8_center_cropped_all_five'
 
 # columns = util.balanced_binary_features
-columns = ['water_quality_concerns_val_YES',
-            'water_quality_concerns_val_NO']
-
+columns = [ 'earoad']
+hold_out = ['CotedIvoire']
 column_weights = [1 for _ in range(len(columns))] # How much to weigh each column in the loss function
 
 num_examples = 1000
-train_test_split = 0.9
+train_test_split = 0.8
 continuous = False
 lr = 1e-4 # was 0.01 for binary
 momentum = 0.5 # was 0.4 for binary
 detailed_metrics_for = 20
-batch_size = 64
+batch_size = 128
 num_workers = 4
 num_epochs = 20
-weight_decay = 1e-3
+weight_decay =1e-3
 
 use_five_bands = True
 
@@ -185,6 +189,8 @@ def train_model(model, criterion, optimizer, scheduler, num_epochs=25):
     model.load_state_dict(best_model_wts)
     return model, best_train_acc, best_acc
 
+
+
 class AddisDataset(Dataset):
     """Addis dataset."""
     def __init__(self, indices, csv_file, root_dir, columns, transform=None):
@@ -225,6 +231,48 @@ class AddisDataset(Dataset):
 
         return sample
 
+class AfroDataset(Dataset):
+    """Afrobarometer dataset."""
+    def __init__(self, indices, csv_file, root_dir, columns, transform=None):
+        """
+        Args:
+            csv_file (string): Path to the csv file.
+            root_dir (string): Directory with all the numpy files.
+            column (string): Variable to predict
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.data = pd.read_csv(csv_file)[columns].values[indices] # TODO: lol indexing is jank rn will change
+        self.root_dir = root_dir
+        self.transform = transform
+        self.indices = indices
+
+        if not continuous:
+            self.balance = np.sum(self.data, axis=0) / float(len(self.data))
+            # print "The following are balanced"
+            # for i in range(len(self.balance)):
+            #     if self.balance[i] >= 0.05 and self.balance[i] <= 0.95: print "'%s'," % columns[i]
+            # print "The above are balanced"
+
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        #inx = np.random.choice(self.indices)
+        #img_name = os.path.join(self.root_dir, satellite + '_median_afro_multiband_224x224_%d.npy' % (inx))
+        img_name = os.path.join(self.root_dir, satellite + '_median_afro_multiband_224x224_%d.npy' % (self.indices[idx]))
+        # image = np.load(img_name)[:, :, :3]
+        if use_five_bands: image = np.load(img_name)
+        else: image = np.load(img_name)[:, :, :3][:,:,::-1].copy()
+        labels = self.data[idx]
+        if self.transform:
+            image = self.transform(image)
+
+        sample = {'image': image, 'labels': labels, 'id': indices[idx]}
+
+        return sample
+
 ####### Initialize Data
 
 data_transforms = transforms.Compose([
@@ -234,15 +282,92 @@ data_transforms = transforms.Compose([
 
 indices = np.arange(len_dataset)
 # np.random.shuffle(indices)
-split_point = int(num_examples*train_test_split)
-train_indices = indices[:split_point]
-test_indices = indices[split_point:num_examples]
+def get_clean_indices():
+    indices = []
+    log = []
+    with open('../../missing_l8.txt','r') as f:
+        missing = ast.literal_eval(f.read())
+    for i in range(0, len_dataset-1):
+        if i < 6700:
+            if i+1 not in missing:
+                indices.append(i)
+        else:
+            indices.append(i)
+    return np.array(indices)
 
-dataset_train = AddisDataset(train_indices, csv_file='../Addis_data_processed.csv',
+indices = get_clean_indices()
+
+def country_urban_indices(indices, len_dataset):
+    data_country = pd.read_csv('../Afrobarometer_R6.csv')['country'][np.arange(len_dataset)].values
+    data_urban =  pd.read_csv('../Afrobarometer_R6.csv')['urban'][np.arange(len_dataset)].values
+    data_unique =  pd.read_csv('../Afrobarometer_R6.csv')['uniquegeocode'][np.arange(len_dataset)].values
+    countries = {}
+    urban = []
+    rural = []
+    unique =[]
+    for i in indices:
+        country = data_country[i]
+        if country not in countries:
+            countries[country] = []
+        countries[country].append(i)
+        urban_val = data_urban[i]
+        if urban_val:
+            urban.append(i)
+        else:
+            rural.append(i)
+        if data_unique[i]:
+            unique.append(i)
+    return (countries, urban, rural, unique)
+
+countries, urban, rural, unique = country_urban_indices(indices, len_dataset)
+num_examples = len(indices)
+train_indices = []
+test_indices = []
+if test_country:
+    for country in countries:
+        if not country in hold_out:
+            train_indices = train_indices + countries[country]
+        else:
+            test_indices = test_indices+countries[country]
+else:
+    np.random.seed(1)
+    np.random.shuffle(indices)
+    split_point = int(num_examples*train_test_split)
+    train_indices = indices[:split_point]
+    test_indices = indices[split_point:num_examples]
+temp = test_indices
+temp_train = train_indices
+if test_unique:
+    test_indices = []
+    train_indices = []
+    for i in temp:
+        if i in unique:
+            test_indices.append(i)
+        else:
+            train_indices.append(i)
+    for i in temp_train:
+        train_indices.append(i)
+final_test_indices = []
+if test_urban:
+    for i in test_indices:
+        if i in urban:
+            final_test_indices.append(i)
+
+            
+if test_rural:
+    for i in test_indices:
+        if i in rural:
+            final_test_indices.append(i)
+
+
+print len(train_indices)
+test_indices = final_test_indices;
+print len(test_indices)
+dataset_train = AfroDataset(train_indices, csv_file='../Afrobarometer_R6.csv',
                                     root_dir=data_dir,
                                     columns=columns,
                                     transform=data_transforms)
-dataset_test = AddisDataset(test_indices, csv_file='../Addis_data_processed.csv',
+dataset_test = AfroDataset(test_indices, csv_file='../Afrobarometer_R6.csv',
                                     root_dir=data_dir,
                                     columns=columns,
                                     transform=data_transforms)
@@ -258,7 +383,7 @@ use_gpu = torch.cuda.is_available()
 ######## Train Model
 
 # torch.set_default_tensor_type('torch.cuda.FloatTensor')
-convolver = nn.Conv2d(5, 3, 1)
+convolver = nn.Conv2d(6, 3, 1)
 model_ft = models.resnet18(pretrained=True)
 num_ftrs = model_ft.fc.in_features
 if continuous:
