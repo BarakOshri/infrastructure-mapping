@@ -17,6 +17,7 @@ import os
 import pandas as pd
 from utils import addis as util
 import ast
+import sys
 from sklearn.metrics import f1_score
 from sklearn.metrics import recall_score
 from sklearn.metrics import precision_score
@@ -27,14 +28,14 @@ np.set_printoptions(threshold=np.nan)
 satellite = 'l8'
 filetail = ".0.npy"
 len_dataset = 7022
-test_urban = 1
-test_rural = 0
+test_urban = int(sys.argv[2])
+test_rural = int(sys.argv[3])
 test_country = 0
 test_unique = 1
-data_dir ='/home/ptr_adlsn/afro_l8_center_cropped_all_five'
-
+data_dir = sys.argv[1]
+argv = sys.argv
 # columns = util.balanced_binary_features
-columns = [ 'earoad']
+columns = [ argv[4]]
 hold_out = ['CotedIvoire']
 column_weights = [1 for _ in range(len(columns))] # How much to weigh each column in the loss function
 
@@ -276,7 +277,6 @@ class AfroDataset(Dataset):
 ####### Initialize Data
 
 data_transforms = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.485, 0.456, 0.406, 0.45, 0.45], [0.229, 0.224, 0.225, 0.225, 0.225])
     ])
@@ -286,7 +286,7 @@ indices = np.arange(len_dataset)
 def get_clean_indices():
     indices = []
     log = []
-    with open('../../missing_l8.txt','r') as f:
+    with open(argv[5],'r') as f:
         missing = ast.literal_eval(f.read())
     for i in range(0, len_dataset-1):
         if i < 6700:
@@ -299,9 +299,9 @@ def get_clean_indices():
 indices = get_clean_indices()
 
 def country_urban_indices(indices, len_dataset):
-    data_country = pd.read_csv('../Afrobarometer_R6.csv')['country'][np.arange(len_dataset)].values
-    data_urban =  pd.read_csv('../Afrobarometer_R6.csv')['urban'][np.arange(len_dataset)].values
-    data_unique =  pd.read_csv('../Afrobarometer_R6.csv')['uniquegeocode'][np.arange(len_dataset)].values
+    data_country = pd.read_csv(argv[6])['country'][np.arange(len_dataset)].values
+    data_urban =  pd.read_csv(argv[6])['urban'][np.arange(len_dataset)].values
+    data_unique =  pd.read_csv(argv[6])['uniquegeocode'][np.arange(len_dataset)].values
     countries = {}
     urban = []
     rural = []
@@ -364,11 +364,11 @@ if test_rural:
 print len(train_indices)
 test_indices = final_test_indices;
 print len(test_indices)
-dataset_train = AfroDataset(train_indices, csv_file='../Afrobarometer_R6.csv',
+dataset_train = AfroDataset(train_indices, argv[6],
                                     root_dir=data_dir,
                                     columns=columns,
                                     transform=data_transforms)
-dataset_test = AfroDataset(test_indices, csv_file='../Afrobarometer_R6.csv',
+dataset_test = AfroDataset(test_indices, argv[6],
                                     root_dir=data_dir,
                                     columns=columns,
                                     transform=data_transforms)
